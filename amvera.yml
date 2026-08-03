@@ -1,0 +1,6 @@
+version: 1
+service:
+  name: auto-search-bot
+  type: app
+  runtime: python3.14
+  command: python main.py

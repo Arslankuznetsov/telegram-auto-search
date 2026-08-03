@@ -16,3 +16,4 @@ __pycache__/
 *.code-workspace
 telegram.session
 *.session
+data/*.db
