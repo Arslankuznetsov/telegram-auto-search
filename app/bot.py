@@ -24,9 +24,9 @@ def parse_query(text: str):
     """Разбирает строку на марку и модель с учётом двухсловных марок."""
     words = text.split()
 
-    if len(words) >= 3 and " ".join(words[:2]).lower() in TWO_WORD_BRANDS:
+if len(words) >= 2 and " ".join(words[:2]).lower() in TWO_WORD_BRANDS:
         brand = " ".join(words[:2])
-        model = " ".join(words[2:])
+        model = " ".join(words[2:]) if len(words) > 2 else None
     elif len(words) >= 2:
         brand = words[0]
         model = " ".join(words[1:])
