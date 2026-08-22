@@ -65,6 +65,18 @@ async def cmd_help(message: types.Message):
     )
 
 
+@dp.message()
+async def on_any_message(message: types.Message):
+    """Отвечает на любое непонятное сообщение подсказкой."""
+    if message.text and not message.text.startswith("/"):
+        await message.answer(
+            "🚗 Отправь команду:\n\n"
+            "🔍 /search BMW X5 — поиск\n"
+            "💰 /price Toyota Camry — аналитика\n"
+            "ℹ️ /help — все команды"
+        )
+
+
 @dp.message(Command("search"))
 async def cmd_search(message: types.Message):
     text = message.text.replace("/search", "").strip()
@@ -241,12 +253,27 @@ async def cmd_remove_channel(message: types.Message):
 
     parts = message.text.split()
     if len(parts) < 2:
-        await message.answer("❌ Укажите канал.\nНапример: /remove_channel @autosale")
+        await message.answer(
+            "❌ Укажите канал или номер из /channels.\n"
+            "Например: /remove_channel @autosale\n"
+            "Или: /remove_channel 2"
+        )
         return
 
-    username = parts[1]
-    await remove_channel(username)
-    await message.answer(f"✅ Канал {username} удалён")
+    value = parts[1]
+
+    # Если передали номер — находим канал по номеру
+    if value.isdigit():
+        channels = await get_channels()
+        idx = int(value) - 1
+        if 0 <= idx < len(channels):
+            await remove_channel(channels[idx])
+            await message.answer(f"✅ Канал {channels[idx]} удалён")
+        else:
+            await message.answer("❌ Неверный номер канала.")
+    else:
+        await remove_channel(value)
+        await message.answer(f"✅ Канал {value} удалён")
 
 
 @dp.message(Command("channels"))
@@ -260,7 +287,12 @@ async def cmd_channels(message: types.Message):
         await message.answer("📡 Нет каналов.")
         return
 
-    response = "📡 Каналы:\n" + "\n".join(f"• {ch}" for ch in channels)
+    response = "📡 Каналы:\n"
+    for i, ch in enumerate(channels, 1):
+        response += f"{i}. {ch}\n"
+
+    response += "\nУдаление: /remove_channel <номер>"
+
     await message.answer(response)
 
 
