@@ -65,18 +65,6 @@ async def cmd_help(message: types.Message):
     )
 
 
-@dp.message()
-async def on_any_message(message: types.Message):
-    """Отвечает на любое непонятное сообщение подсказкой."""
-    if message.text and not message.text.startswith("/"):
-        await message.answer(
-            "🚗 Отправь команду:\n\n"
-            "🔍 /search BMW X5 — поиск\n"
-            "💰 /price Toyota Camry — аналитика\n"
-            "ℹ️ /help — все команды"
-        )
-
-
 @dp.message(Command("search"))
 async def cmd_search(message: types.Message):
     text = message.text.replace("/search", "").strip()
@@ -315,3 +303,16 @@ async def cmd_stats(message: types.Message):
         )
     finally:
         await db.close()
+
+
+# Универсальный обработчик — в самом конце, чтобы не перехватывать команды
+@dp.message()
+async def on_any_message(message: types.Message):
+    """Отвечает на любое непонятное сообщение подсказкой."""
+    if message.text and not message.text.startswith("/"):
+        await message.answer(
+            "🚗 Отправь команду:\n\n"
+            "🔍 /search BMW X5 — поиск\n"
+            "💰 /price Toyota Camry — аналитика\n"
+            "ℹ️ /help — все команды"
+        )
