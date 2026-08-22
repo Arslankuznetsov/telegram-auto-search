@@ -1,12 +1,10 @@
 from telethon import TelegramClient, events
-from app.config import API_ID, API_HASH, PROXY_PORT
+from app.config import API_ID, API_HASH
 from app.db import get_db, get_channels
 from app.parser import parse_listing
 
 client = TelegramClient(
-    'telegram.session', API_ID, API_HASH,
-    proxy=('socks5', '127.0.0.1', PROXY_PORT)
-)
+    'telegram.session', API_ID, API_HASH)
 
 
 async def process_new_message(event):
