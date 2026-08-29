@@ -1,38 +1,91 @@
 import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.append(str(Path(__file__).parent))
 
 from app import setup
-from app.telegram.client import client, start_monitoring, process_new_message
+from app.telegram.client import client, process_new_message
 from app.db import get_db, get_channels
 
+LIVE_CHECK_INTERVAL = 5 * 60      # проверка новых каналов раз в 5 минут
+RESCAN_INTERVAL = 2 * 60 * 60     # полное контрольное сканирование раз в 2 часа
+MESSAGES_ON_RESCAN = 50           # сколько последних сообщений проверяем при контрольном сканировании
+MESSAGES_ON_NEW_CHANNEL = 20      # сколько сообщений берём при добавлении нового канала
 
-async def initial_scan():
-    """Собирает последние объявления при старте."""
-    print("📡 Начальное сканирование каналов...")
+
+async def scan_channel(channel: str, limit: int, label: str = "скан"):
+    """Сканирует последние limit сообщений канала и сохраняет новые."""
+    print(f"📡 {label}: {channel}")
     db = await get_db()
-    channels = await get_channels()
+    try:
+        messages = await client.get_messages(channel, limit=limit)
+        new_count = 0
 
-    for channel in channels:
-        try:
-            new_count = 0
-            messages = await client.get_messages(channel, limit=50)
-            for msg in messages:
-                text = msg.text or msg.raw_text or getattr(msg, 'caption', None)
-                if text:
-                    from types import SimpleNamespace
-                    fake_event = SimpleNamespace()
-                    fake_event.message = msg
-                    fake_event.get_chat = lambda c=channel: client.get_entity(c)
-                    await process_new_message(fake_event)
-                    new_count += 1
-            print(f"  ✅ {channel}: {new_count} обработано")
-        except Exception as e:
-            print(f"  ⚠️ {channel}: {e}")
+        for msg in messages:
+            text = msg.text or msg.raw_text or getattr(msg, 'caption', None)
+            if not text:
+                continue
 
-    await db.close()
+            cursor = await db.execute(
+                "SELECT id FROM listings WHERE channel_username = ? AND message_id = ?",
+                (channel, msg.id)
+            )
+            exists = await cursor.fetchone()
+            if exists:
+                continue
+
+            fake_event = SimpleNamespace()
+            fake_event.message = msg
+            fake_event.get_chat = lambda c=channel: client.get_entity(c)
+            await process_new_message(fake_event)
+            new_count += 1
+
+        if new_count:
+            print(f"  ✅ {channel}: {new_count} новых")
+        else:
+            print(f"  ➖ {channel}: нет новых")
+    except Exception as e:
+        print(f"  ⚠️ {channel}: {e}")
+    finally:
+        await db.close()
+
+
+async def live_channel_worker():
+    """Проверяет список каналов и подписывается на новые."""
+    from telethon import events
+
+    subscribed = set()
+
+    while True:
+        channels = await get_channels()
+        current = set(channels)
+
+        new_channels = current - subscribed
+
+        for channel in new_channels:
+            client.add_event_handler(
+                process_new_message,
+                events.NewMessage(chats=channel)
+            )
+            print(f"👂 Подписан на live-обновления: {channel}")
+
+            # сразу подгружаем последние объявления нового канала
+            await scan_channel(channel, limit=MESSAGES_ON_NEW_CHANNEL, label="новый канал")
+
+        subscribed = current
+        await asyncio.sleep(LIVE_CHECK_INTERVAL)
+
+
+async def periodic_rescan_worker():
+    """Периодически перепроверяет последние сообщения всех каналов."""
+    while True:
+        print("🔄 Контрольное сканирование всех каналов...")
+        channels = await get_channels()
+        for channel in channels:
+            await scan_channel(channel, limit=MESSAGES_ON_RESCAN, label="контроль")
+        await asyncio.sleep(RESCAN_INTERVAL)
 
 
 async def main():
@@ -43,11 +96,11 @@ async def main():
     me = await client.get_me()
     print(f"✅ Telegram: {me.first_name}")
 
-    await initial_scan()
+    # запускаем фоновые задачи
+    asyncio.create_task(live_channel_worker())
+    asyncio.create_task(periodic_rescan_worker())
 
-    await start_monitoring()
-    print("🔄 Мониторинг запущен")
-
+    # держим Telethon активным
     await client.run_until_disconnected()
 
 
