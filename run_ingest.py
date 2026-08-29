@@ -65,14 +65,23 @@ async def live_channel_worker():
         new_channels = current - subscribed
 
         for channel in new_channels:
-            client.add_event_handler(
-                process_new_message,
-                events.NewMessage(chats=channel)
-            )
-            print(f"👂 Подписан на live-обновления: {channel}")
+            try:
+                client.add_event_handler(
+                    process_new_message,
+                    events.NewMessage(chats=channel)
+                )
+                print(f"👂 Подписан на live-обновления: {channel}")
 
-            # сразу подгружаем последние объявления нового канала
-            await scan_channel(channel, limit=MESSAGES_ON_NEW_CHANNEL, label="новый канал")
+                await scan_channel(channel, limit=MESSAGES_ON_NEW_CHANNEL, label="новый канал")
+
+            except Exception as e:
+                print(f"⚠️ Ошибка подписки на {channel}: {e}")
+
+                # Если канал не существует — удаляем его из базы
+                if "No user has" in str(e):
+                    from app.db import remove_channel
+                    await remove_channel(channel.lstrip("@"))
+                    print(f"🗑 Канал {channel} удалён из базы, так как не существует")
 
         subscribed = current
         await asyncio.sleep(LIVE_CHECK_INTERVAL)
