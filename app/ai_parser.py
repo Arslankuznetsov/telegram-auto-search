@@ -43,9 +43,9 @@ def parse_listing_ai(text: str) -> dict:
                             "Если модель не удаётся найти, ставь null, но только если её действительно нет в тексте.\n\n"
 
                             "ТРЕБОВАНИЯ К ДАННЫМ:\n"
-                            "1. brand — всегда официальное английское название марки: Kia, Hyundai, Honda, Chevrolet, Toyota, BMW, Land Rover, Skoda, Volkswagen, Mercedes-Benz.\n"
-                            "2. model — модель без поколения и лишних слов. Например: 'K5 3generation Noblesse' → model='K5'.\n"
-                            "3. generation — поколение (число или римская цифра), если указано.\n"
+                            "1. brand — всегда официальное английское название марки.\n"
+                            "2. model — модель без поколения и лишних слов.\n"
+                            "3. generation — поколение, если указано (число или римская цифра).\n"
                             "4. year — год выпуска. Извлекай только 4 цифры. Если указано '2023/06' или 'Февраль 2023', бери '2023'. Не включай месяц.\n"
                             "5. price_rub — цена в рублях, только цифры. Убирай пробелы и запятые.\n"
                             "6. mileage_km — пробег в км. Всегда преобразуй в целое число. '45 тыс. км', '45к', '45 000', '45000' → 45000.\n"
@@ -81,7 +81,13 @@ def parse_listing_ai(text: str) -> dict:
         if content.endswith("```"):
             content = content.rsplit("```", 1)[0]
 
-        return json.loads(content)
+        parsed = json.loads(content)
+
+        # Гарантируем, что вернём словарь
+        if isinstance(parsed, dict):
+            return parsed
+        else:
+            return {}
 
     except Exception as e:
         print(f"⚠️ AI-парсер ошибка: {e}")
