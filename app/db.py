@@ -84,6 +84,13 @@ async def init_db():
             username TEXT UNIQUE NOT NULL,
             added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
     await db.commit()
     await db.close()
@@ -179,3 +186,23 @@ async def get_price_stats(brand: str, model: str = None):
         "max": int(max_price),
         "median": int(median)
     }
+
+
+async def save_user(user_id: int, username: str = None, first_name: str = None):
+    """Сохраняет пользователя, если его ещё нет."""
+    db = await get_db()
+    await db.execute("""
+        INSERT OR IGNORE INTO users (user_id, username, first_name)
+        VALUES (?, ?, ?)
+    """, (user_id, username, first_name))
+    await db.commit()
+    await db.close()
+
+
+async def get_users_count():
+    """Возвращает количество пользователей."""
+    db = await get_db()
+    cursor = await db.execute("SELECT COUNT(*) as count FROM users")
+    result = await cursor.fetchone()
+    await db.close()
+    return result["count"]

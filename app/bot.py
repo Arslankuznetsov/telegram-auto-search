@@ -4,7 +4,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from app.config import BOT_TOKEN, ADMIN_IDS
-from app.db import get_db, add_channel, remove_channel, get_channels
+from app.db import get_db, add_channel, remove_channel, get_channels, save_user, get_users_count
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -134,6 +134,11 @@ class SearchState(StatesGroup):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    await save_user(
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name
+    )
     await message.answer(
         f"🚗 Поиск автомобилей из Telegram-каналов.\n\n"
         f"Ваш ID: {message.from_user.id}\n\n"
@@ -504,10 +509,13 @@ async def cmd_stats(message: types.Message):
         )
         brands = (await cursor.fetchone())["brands"]
 
+        users = await get_users_count()
+
         await message.answer(
             f"📊 Статистика:\n"
             f"• Всего объявлений: {total}\n"
-            f"• Уникальных марок: {brands}"
+            f"• Уникальных марок: {brands}\n"
+            f"• Пользователей: {users}"
         )
     finally:
         await db.close()
@@ -516,6 +524,11 @@ async def cmd_stats(message: types.Message):
 @dp.message()
 async def on_any_message(message: types.Message):
     if message.text and not message.text.startswith("/"):
+        await save_user(
+            user_id=message.from_user.id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name
+        )
         await message.answer(
             "🚗 Отправь команду:\n\n"
             "🔍 /search BMW X5 — поиск\n"
