@@ -83,15 +83,14 @@ def parse_listing_ai(text: str) -> dict:
         if content.endswith("```"):
             content = content.rsplit("```", 1)[0]
 
-        # Извлекаем только первый JSON-объект (от первой { до последней })
-        start = content.find("{")
-        end = content.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            content = content[start:end + 1]
+        # Пытаемся извлечь первый валидный JSON-объект
+        decoder = json.JSONDecoder()
+        try:
+            parsed, _ = decoder.raw_decode(content)
+        except json.JSONDecodeError:
+            # Если не вышло, возвращаем пустой словарь
+            return {}
 
-        parsed = json.loads(content)
-
-        # Гарантируем, что вернём словарь
         if isinstance(parsed, dict):
             return parsed
         else:
