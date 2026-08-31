@@ -56,7 +56,6 @@ def transliterate(text: str) -> str:
 
 
 def parse_query(text: str):
-    """Разбирает строку на марку и модель с учётом русских названий."""
     words = text.split()
     if not words:
         return None, None
@@ -86,13 +85,11 @@ def parse_query(text: str):
 
 
 def parse_mileage(text: str) -> int | None:
-    """Понимает: 50000, 50 тыс, 50к, 50k"""
     text = text.strip().lower().replace(" ", "")
     if not text:
         return None
     if text.isdigit():
         return int(text)
-    # убираем "тыс", "к", "k"
     if "тыс" in text or text.endswith("к") or text.endswith("k"):
         text = text.replace("тыс", "").replace("к", "").replace("k", "")
         try:
@@ -103,7 +100,6 @@ def parse_mileage(text: str) -> int | None:
 
 
 def parse_price(text: str) -> int | None:
-    """Понимает: 1500000, 1.5 млн, 1,5 млн, 1.5м"""
     text = text.strip().lower().replace(" ", "")
     if not text:
         return None
@@ -157,8 +153,8 @@ async def cmd_help(message: types.Message):
         "🔍 Поиск:\n"
         "1. Нажми /search\n"
         "2. Введи марку и модель (можно по-русски: кия к5)\n"
-        "3. Введи максимальный пробег (например, 50000 или 'нет')\n"
-        "4. Введи максимальную цену (например, 1500000 или 'до 1,5 млн')\n\n"
+        "3. Введи максимальный пробег (или 'нет')\n"
+        "4. Введи максимальную цену (или 'нет')\n\n"
         "📚 Каталог:\n"
         "Нажми /catalog и выбери марку, затем модель.\n\n"
         "💰 Аналитика:\n"
@@ -168,7 +164,7 @@ async def cmd_help(message: types.Message):
     )
 
 
-async def execute_search(message: types.Message, query: str, mileage_max=None, price_max=None):
+async def execute_search(message: types.Message, query: str, mileage_max=None, price_max=None, exact_model: bool = False):
     brand, model = parse_query(query)
 
     db = await get_db()
@@ -180,8 +176,12 @@ async def execute_search(message: types.Message, query: str, mileage_max=None, p
             conditions.append("LOWER(brand) = LOWER(?)")
             params.append(brand)
         if model:
-            conditions.append("LOWER(model) LIKE LOWER(?)")
-            params.append(f"%{model}%")
+            if exact_model:
+                conditions.append("LOWER(TRIM(model)) = LOWER(?)")
+                params.append(model.strip())
+            else:
+                conditions.append("LOWER(model) LIKE LOWER(?)")
+                params.append(f"%{model.strip()}%")
 
         if mileage_max is not None:
             conditions.append("mileage_km <= ?")
@@ -274,8 +274,6 @@ async def execute_price(message: types.Message, text: str):
     await message.answer(response)
 
 
-# === Каталог ===
-
 @dp.message(Command("catalog"))
 async def cmd_catalog(message: types.Message):
     db = await get_db()
@@ -283,9 +281,9 @@ async def cmd_catalog(message: types.Message):
         cursor = await db.execute("""
             SELECT brand, COUNT(*) as cnt
             FROM listings
-            WHERE brand IS NOT NULL
-            GROUP BY LOWER(brand)
-            ORDER BY LOWER(brand)
+            WHERE brand IS NOT NULL AND model IS NOT NULL
+            GROUP BY LOWER(TRIM(brand))
+            ORDER BY LOWER(TRIM(brand))
         """)
         rows = await cursor.fetchall()
     finally:
@@ -295,24 +293,22 @@ async def cmd_catalog(message: types.Message):
         await message.answer("📚 Каталог пока пуст.")
         return
 
-    brands_with_counts = {}
+    unique = {}
     for row in rows:
-        brand = row["brand"]
+        brand = row["brand"].strip()
         cnt = row["cnt"]
         key = brand.lower()
-        if key not in brands_with_counts:
-            brands_with_counts[key] = {"brand": brand, "cnt": cnt}
+        if key not in unique:
+            unique[key] = {"brand": brand, "cnt": cnt}
         else:
-            brands_with_counts[key]["cnt"] += cnt
+            unique[key]["cnt"] += cnt
 
-    sorted_brands = sorted(brands_with_counts.values(), key=lambda x: x["brand"].lower())
+    sorted_brands = sorted(unique.values(), key=lambda x: x["brand"].lower())
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
     for item in sorted_brands:
-        brand = item["brand"]
-        cnt = item["cnt"]
         keyboard.inline_keyboard.append(
-            [InlineKeyboardButton(text=f"{brand} ({cnt})", callback_data=f"brand:{brand}")]
+            [InlineKeyboardButton(text=f"{item['brand']} ({item['cnt']})", callback_data=f"brand:{item['brand']}")]
         )
 
     await message.answer("📚 Выберите марку:", reply_markup=keyboard)
@@ -325,11 +321,11 @@ async def process_brand_callback(callback: types.CallbackQuery):
     db = await get_db()
     try:
         cursor = await db.execute("""
-            SELECT model, COUNT(*) as cnt
+            SELECT TRIM(model) as model, COUNT(*) as cnt
             FROM listings
-            WHERE brand = ? AND model IS NOT NULL
-            GROUP BY LOWER(model)
-            ORDER BY LOWER(model)
+            WHERE LOWER(TRIM(brand)) = LOWER(?) AND model IS NOT NULL
+            GROUP BY LOWER(TRIM(model))
+            ORDER BY LOWER(TRIM(model))
         """, (brand,))
         rows = await cursor.fetchall()
     finally:
@@ -341,22 +337,10 @@ async def process_brand_callback(callback: types.CallbackQuery):
         await callback.message.answer(f"Нет моделей для {brand}")
         return
 
-    models_with_counts = {}
-    for row in rows:
-        model = row["model"]
-        cnt = row["cnt"]
-        key = model.lower()
-        if key not in models_with_counts:
-            models_with_counts[key] = {"model": model, "cnt": cnt}
-        else:
-            models_with_counts[key]["cnt"] += cnt
-
-    sorted_models = sorted(models_with_counts.values(), key=lambda x: x["model"].lower())
-
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-    for item in sorted_models:
-        model = item["model"]
-        cnt = item["cnt"]
+    for row in rows:
+        model = row["model"].strip()
+        cnt = row["cnt"]
         keyboard.inline_keyboard.append(
             [InlineKeyboardButton(text=f"{model} ({cnt})", callback_data=f"model:{brand}:{model}")]
         )
@@ -372,13 +356,11 @@ async def process_model_callback(callback: types.CallbackQuery):
         return
 
     brand = parts[1]
-    model = parts[2]
+    model = parts[2].strip()
     await callback.answer()
 
-    await execute_search(callback.message, f"{brand} {model}")
+    await execute_search(callback.message, f"{brand} {model}", exact_model=True)
 
-
-# === Поиск и цена ===
 
 @dp.message(Command("search"))
 async def cmd_search(message: types.Message, state: FSMContext):
