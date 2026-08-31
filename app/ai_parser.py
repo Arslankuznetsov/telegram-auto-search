@@ -76,10 +76,18 @@ def parse_listing_ai(text: str) -> dict:
         content = result["result"]["alternatives"][0]["message"]["text"]
 
         content = content.strip()
+
+        # Убираем markdown-обёртку, если есть
         if content.startswith("```"):
             content = content.split("\n", 1)[1]
         if content.endswith("```"):
             content = content.rsplit("```", 1)[0]
+
+        # Извлекаем только первый JSON-объект (от первой { до последней })
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            content = content[start:end + 1]
 
         parsed = json.loads(content)
 
