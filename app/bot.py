@@ -1,6 +1,8 @@
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from app.config import BOT_TOKEN, ADMIN_IDS
 from app.db import get_db, add_channel, remove_channel, get_channels
 
@@ -20,54 +22,24 @@ TWO_WORD_BRANDS = [
     "mercedes benz",
 ]
 
-# Словарь русских названий марок -> английские
 BRAND_ALIASES = {
-    "кия": "Kia",
-    "киа": "Kia",
-    "хендай": "Hyundai",
-    "хёндай": "Hyundai",
-    "хундай": "Hyundai",
-    "тойота": "Toyota",
-    "бмв": "BMW",
-    "мерседес": "Mercedes-Benz",
-    "мерс": "Mercedes-Benz",
-    "фольксваген": "Volkswagen",
-    "фольцваген": "Volkswagen",
-    "шевроле": "Chevrolet",
-    "хонда": "Honda",
-    "ниссан": "Nissan",
-    "митсубиси": "Mitsubishi",
-    "мицубиси": "Mitsubishi",
-    "мазда": "Mazda",
-    "субару": "Subaru",
-    "лексус": "Lexus",
-    "ауди": "Audi",
-    "шкода": "Skoda",
-    "рено": "Renault",
-    "пежо": "Peugeot",
-    "ситроен": "Citroen",
-    "опель": "Opel",
-    "форд": "Ford",
-    "лада": "Lada",
-    "газ": "ГАЗ",
-    "уаз": "УАЗ",
-    "джили": "Geely",
-    "чери": "Chery",
-    "хавал": "Haval",
-    "чанган": "Changan",
-    "чанъань": "Changan",
-    "лифан": "Lifan",
-    "джетур": "Jetour",
-    "омода": "Omoda",
-    "эксид": "Exeed",
-    "лисян": "Li Auto",
-    "воях": "Voyah",
-    "зикр": "Zeekr",
+    "кия": "Kia", "киа": "Kia", "хендай": "Hyundai", "хёндай": "Hyundai",
+    "хундай": "Hyundai", "тойота": "Toyota", "бмв": "BMW",
+    "мерседес": "Mercedes-Benz", "мерс": "Mercedes-Benz",
+    "фольксваген": "Volkswagen", "фольцваген": "Volkswagen",
+    "шевроле": "Chevrolet", "хонда": "Honda", "ниссан": "Nissan",
+    "митсубиси": "Mitsubishi", "мицубиси": "Mitsubishi", "мазда": "Mazda",
+    "субару": "Subaru", "лексус": "Lexus", "ауди": "Audi", "шкода": "Skoda",
+    "рено": "Renault", "пежо": "Peugeot", "ситроен": "Citroen",
+    "опель": "Opel", "форд": "Ford", "лада": "Lada", "газ": "ГАЗ",
+    "уаз": "УАЗ", "джили": "Geely", "чери": "Chery", "хавал": "Haval",
+    "чанган": "Changan", "чанъань": "Changan", "лифан": "Lifan",
+    "джетур": "Jetour", "омода": "Omoda", "эксид": "Exeed",
+    "лисян": "Li Auto", "воях": "Voyah", "зикр": "Zeekr",
 }
 
 
 def transliterate(text: str) -> str:
-    """Заменяет русские буквы на латинские для моделей."""
     mapping = {
         "а": "a", "б": "b", "в": "v", "г": "g", "д": "d",
         "е": "e", "ё": "e", "ж": "zh", "з": "z", "и": "i",
@@ -84,12 +56,10 @@ def transliterate(text: str) -> str:
 
 
 def parse_query(text: str):
-    """Разбирает строку на марку и модель с учётом русских названий."""
     words = text.split()
     if not words:
         return None, None
 
-    # Переводим первое слово/два слова, если это русская марка
     first_lower = words[0].lower()
     if first_lower in BRAND_ALIASES:
         brand = BRAND_ALIASES[first_lower]
@@ -107,7 +77,6 @@ def parse_query(text: str):
         brand = words[0]
         model_words = []
 
-    # Транслитерируем модель, если она написана русскими буквами
     model = " ".join(model_words) if model_words else None
     if model and any("а" <= ch <= "я" or "ё" <= ch <= "ё" for ch in model.lower()):
         model = transliterate(model)
@@ -115,7 +84,32 @@ def parse_query(text: str):
     return brand, model
 
 
-# Создаём постоянную клавиатуру
+def parse_human_price(text: str) -> int | None:
+    """Понимает: 1500000, 1.5 млн, 1,5 млн, 1.5м, 1,5м"""
+    text = text.strip().lower().replace(" ", "")
+    if not text:
+        return None
+
+    # Если просто число
+    if text.isdigit():
+        return int(text)
+
+    # Если есть млн
+    if "млн" in text or text.endswith("м") or text.endswith("к"):
+        text = text.replace("млн", "").replace("м", "").replace("к", "")
+        try:
+            val = float(text.replace(",", "."))
+            return int(val * 1_000_000)
+        except ValueError:
+            return None
+
+    # Если с запятой/точкой, но без млн
+    try:
+        return int(float(text.replace(",", ".")))
+    except ValueError:
+        return None
+
+
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="/search"), KeyboardButton(text="/price")],
@@ -126,13 +120,20 @@ main_keyboard = ReplyKeyboardMarkup(
 )
 
 
+class SearchState(StatesGroup):
+    waiting_for_query = State()
+    waiting_for_mileage = State()
+    waiting_for_price = State()
+    waiting_for_price_query = State()
+
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
         f"🚗 Поиск автомобилей из Telegram-каналов.\n\n"
         f"Ваш ID: {message.from_user.id}\n\n"
-        f"🔍 /search <марка> <модель>\n"
-        f"💰 /price <марка> <модель> — аналитика цен\n"
+        f"🔍 Нажми /search — введи марку и модель\n"
+        f"💰 Нажми /price — аналитика цен\n"
         f"📊 /stats — статистика\n"
         f"ℹ️ /help — помощь",
         reply_markup=main_keyboard,
@@ -144,50 +145,18 @@ async def cmd_help(message: types.Message):
     await message.answer(
         "🚗 Поиск автомобилей из Telegram-каналов.\n\n"
         "🔍 Поиск:\n"
-        "/search BMW X5\n"
-        "/search Land Rover Discovery Sport\n"
-        "Можно по-русски: /search кия к5\n\n"
-        "🔍 С фильтрами:\n"
-        "/search BMW X5 цена_от=1500000 год_от=2018 пробег_до=50000\n\n"
+        "1. Нажми /search\n"
+        "2. Введи марку и модель (можно по-русски: кия к5)\n"
+        "3. Введи максимальный пробег (или 'нет')\n"
+        "4. Введи максимальную цену (или 'нет')\n\n"
         "💰 Аналитика:\n"
-        "/price Toyota Camry\n"
-        "/price Land Rover\n\n"
+        "Нажми /price и введи марку/модель.\n\n"
         "📊 /stats — статистика базы",
         reply_markup=main_keyboard,
     )
 
 
-@dp.message(Command("search"))
-async def cmd_search(message: types.Message):
-    text = message.text.replace("/search", "").strip()
-
-    if not text:
-        await message.answer(
-            "❌ Укажите марку и модель.\n"
-            "Например: /search BMW X5\n"
-            "Или по-русски: /search кия к5"
-        )
-        return
-
-    filters = {}
-    query_parts = []
-
-    for word in text.split():
-        if "=" in word:
-            key, value = word.split("=", 1)
-            try:
-                filters[key] = int(value.replace(" ", ""))
-            except ValueError:
-                query_parts.append(word)
-        else:
-            query_parts.append(word)
-
-    query = " ".join(query_parts)
-
-    if not query:
-        await message.answer("❌ Укажите марку для поиска.")
-        return
-
+async def execute_search(message: types.Message, query: str, mileage_max=None, price_max=None):
     brand, model = parse_query(query)
 
     db = await get_db()
@@ -202,24 +171,12 @@ async def cmd_search(message: types.Message):
             conditions.append("LOWER(model) LIKE LOWER(?)")
             params.append(f"%{model}%")
 
-        if "цена_от" in filters:
-            conditions.append("price_rub >= ?")
-            params.append(filters["цена_от"])
-        if "цена_до" in filters:
-            conditions.append("price_rub <= ?")
-            params.append(filters["цена_до"])
-        if "год_от" in filters:
-            conditions.append("year >= ?")
-            params.append(filters["год_от"])
-        if "год_до" in filters:
-            conditions.append("year <= ?")
-            params.append(filters["год_до"])
-        if "пробег_от" in filters:
-            conditions.append("mileage_km >= ?")
-            params.append(filters["пробег_от"])
-        if "пробег_до" in filters:
+        if mileage_max is not None:
             conditions.append("mileage_km <= ?")
-            params.append(filters["пробег_до"])
+            params.append(mileage_max)
+        if price_max is not None:
+            conditions.append("price_rub <= ?")
+            params.append(price_max)
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
@@ -278,16 +235,56 @@ async def cmd_search(message: types.Message):
         await db.close()
 
 
-@dp.message(Command("price"))
-async def cmd_price(message: types.Message):
-    text = message.text.replace("/price", "").strip()
+@dp.message(Command("search"))
+async def cmd_search(message: types.Message, state: FSMContext):
+    text = message.text.replace("/search", "").strip()
+    if text:
+        await execute_search(message, text)
+    else:
+        await message.answer("🔍 Введите марку и модель.\nНапример: кия к5")
+        await state.set_state(SearchState.waiting_for_query)
 
+
+@dp.message(SearchState.waiting_for_query)
+async def process_query(message: types.Message, state: FSMContext):
+    query = message.text.strip()
+    await state.update_data(query=query)
+    await message.answer("Максимальный пробег? (например, 50000 или напишите 'нет')")
+    await state.set_state(SearchState.waiting_for_mileage)
+
+
+@dp.message(SearchState.waiting_for_mileage)
+async def process_mileage(message: types.Message, state: FSMContext):
+    text = message.text.strip().lower()
+    if text in ("нет", "не важно", "-", "пропустить"):
+        mileage_max = None
+    else:
+        mileage_max = parse_human_price(text) if any(ch.isdigit() for ch in text) else None
+
+    await state.update_data(mileage_max=mileage_max)
+    await message.answer("Максимальная цена? (например, 1500000 или 'до 1,5 млн')")
+    await state.set_state(SearchState.waiting_for_price)
+
+
+@dp.message(SearchState.waiting_for_price)
+async def process_price(message: types.Message, state: FSMContext):
+    text = message.text.strip().lower()
+    if text in ("нет", "не важно", "-", "пропустить"):
+        price_max = None
+    else:
+        price_max = parse_human_price(text)
+
+    data = await state.get_data()
+    query = data.get("query", "")
+    mileage_max = data.get("mileage_max")
+    await state.clear()
+    await execute_search(message, query, mileage_max, price_max)
+
+
+async def execute_price(message: types.Message, text: str):
+    text = text.strip()
     if not text:
-        await message.answer(
-            "❌ Укажите марку и модель.\n"
-            "Например: /price BMW X5\n"
-            "Или только марку: /price Toyota"
-        )
+        await message.answer("❌ Введите марку и модель. Например: кия к5")
         return
 
     brand, model = parse_query(text)
@@ -311,6 +308,23 @@ async def cmd_price(message: types.Message):
     await message.answer(response)
 
 
+@dp.message(Command("price"))
+async def cmd_price(message: types.Message, state: FSMContext):
+    text = message.text.replace("/price", "").strip()
+    if text:
+        await execute_price(message, text)
+    else:
+        await message.answer("💰 Введите марку и модель.\nНапример: кия к5 или toyota camry")
+        await state.set_state(SearchState.waiting_for_price_query)
+
+
+@dp.message(SearchState.waiting_for_price_query)
+async def process_price_query(message: types.Message, state: FSMContext):
+    await state.clear()
+    await execute_price(message, message.text)
+
+
+# Админские команды (без изменений)
 @dp.message(Command("add_channel"))
 async def cmd_add_channel(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -324,7 +338,6 @@ async def cmd_add_channel(message: types.Message):
 
     username = parts[1]
     await add_channel(username)
-
     await message.answer(f"✅ Канал {username} добавлен")
 
 
@@ -399,7 +412,6 @@ async def cmd_stats(message: types.Message):
         await db.close()
 
 
-# Универсальный обработчик — в самом конце
 @dp.message()
 async def on_any_message(message: types.Message):
     if message.text and not message.text.startswith("/"):
