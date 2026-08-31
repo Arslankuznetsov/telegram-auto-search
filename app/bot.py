@@ -1,6 +1,6 @@
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from app.config import BOT_TOKEN, ADMIN_IDS
@@ -85,16 +85,11 @@ def parse_query(text: str):
 
 
 def parse_human_price(text: str) -> int | None:
-    """Понимает: 1500000, 1.5 млн, 1,5 млн, 1.5м, 1,5м"""
     text = text.strip().lower().replace(" ", "")
     if not text:
         return None
-
-    # Если просто число
     if text.isdigit():
         return int(text)
-
-    # Если есть млн
     if "млн" in text or text.endswith("м") or text.endswith("к"):
         text = text.replace("млн", "").replace("м", "").replace("к", "")
         try:
@@ -102,8 +97,6 @@ def parse_human_price(text: str) -> int | None:
             return int(val * 1_000_000)
         except ValueError:
             return None
-
-    # Если с запятой/точкой, но без млн
     try:
         return int(float(text.replace(",", ".")))
     except ValueError:
@@ -113,7 +106,8 @@ def parse_human_price(text: str) -> int | None:
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="/search"), KeyboardButton(text="/price")],
-        [KeyboardButton(text="/help"), KeyboardButton(text="/stats")],
+        [KeyboardButton(text="/catalog"), KeyboardButton(text="/help")],
+        [KeyboardButton(text="/stats")],
     ],
     resize_keyboard=True,
     persistent=True,
@@ -132,8 +126,9 @@ async def cmd_start(message: types.Message):
     await message.answer(
         f"🚗 Поиск автомобилей из Telegram-каналов.\n\n"
         f"Ваш ID: {message.from_user.id}\n\n"
-        f"🔍 Нажми /search — введи марку и модель\n"
-        f"💰 Нажми /price — аналитика цен\n"
+        f"🔍 /search — поиск по марке и модели\n"
+        f"📚 /catalog — выбрать из каталога\n"
+        f"💰 /price — аналитика цен\n"
         f"📊 /stats — статистика\n"
         f"ℹ️ /help — помощь",
         reply_markup=main_keyboard,
@@ -149,6 +144,8 @@ async def cmd_help(message: types.Message):
         "2. Введи марку и модель (можно по-русски: кия к5)\n"
         "3. Введи максимальный пробег (или 'нет')\n"
         "4. Введи максимальную цену (или 'нет')\n\n"
+        "📚 Каталог:\n"
+        "Нажми /catalog и выбери марку, затем модель.\n\n"
         "💰 Аналитика:\n"
         "Нажми /price и введи марку/модель.\n\n"
         "📊 /stats — статистика базы",
@@ -235,6 +232,107 @@ async def execute_search(message: types.Message, query: str, mileage_max=None, p
         await db.close()
 
 
+async def execute_price(message: types.Message, text: str):
+    text = text.strip()
+    if not text:
+        await message.answer("❌ Введите марку и модель. Например: кия к5")
+        return
+
+    brand, model = parse_query(text)
+
+    from app.db import get_price_stats
+
+    stats = await get_price_stats(brand, model)
+
+    if not stats:
+        await message.answer(f"😔 Нет данных по {text}")
+        return
+
+    response = (
+        f"📊 Аналитика цен: {text}\n\n"
+        f"• Объявлений: {stats['count']}\n"
+        f"• Средняя цена: {stats['avg']:,} ₽\n"
+        f"• Медиана: {stats['median']:,} ₽\n"
+        f"• Диапазон: {stats['min']:,} — {stats['max']:,} ₽"
+    )
+
+    await message.answer(response)
+
+
+# === Каталог ===
+
+@dp.message(Command("catalog"))
+async def cmd_catalog(message: types.Message):
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT DISTINCT brand FROM listings WHERE brand IS NOT NULL ORDER BY brand"
+        )
+        rows = await cursor.fetchall()
+    finally:
+        await db.close()
+
+    if not rows:
+        await message.answer("📚 Каталог пока пуст.")
+        return
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    for row in rows:
+        brand = row["brand"]
+        keyboard.inline_keyboard.append(
+            [InlineKeyboardButton(text=brand, callback_data=f"brand:{brand}")]
+        )
+
+    await message.answer("📚 Выберите марку:", reply_markup=keyboard)
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("brand:"))
+async def process_brand_callback(callback: types.CallbackQuery):
+    brand = callback.data.split(":", 1)[1]
+
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT DISTINCT model FROM listings WHERE brand = ? AND model IS NOT NULL ORDER BY model",
+            (brand,)
+        )
+        rows = await cursor.fetchall()
+    finally:
+        await db.close()
+
+    await callback.answer()
+
+    if not rows:
+        await callback.message.answer(f"Нет моделей для {brand}")
+        return
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    for row in rows:
+        model = row["model"]
+        keyboard.inline_keyboard.append(
+            [InlineKeyboardButton(text=model, callback_data=f"model:{brand}:{model}")]
+        )
+
+    await callback.message.answer(f"🚗 {brand} — выберите модель:", reply_markup=keyboard)
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("model:"))
+async def process_model_callback(callback: types.CallbackQuery):
+    parts = callback.data.split(":", 2)
+    if len(parts) != 3:
+        await callback.answer("Ошибка")
+        return
+
+    brand = parts[1]
+    model = parts[2]
+    await callback.answer()
+
+    # Выполняем поиск
+    await execute_search(callback.message, f"{brand} {model}")
+
+
+# === Поиск и цена ===
+
 @dp.message(Command("search"))
 async def cmd_search(message: types.Message, state: FSMContext):
     text = message.text.replace("/search", "").strip()
@@ -281,33 +379,6 @@ async def process_price(message: types.Message, state: FSMContext):
     await execute_search(message, query, mileage_max, price_max)
 
 
-async def execute_price(message: types.Message, text: str):
-    text = text.strip()
-    if not text:
-        await message.answer("❌ Введите марку и модель. Например: кия к5")
-        return
-
-    brand, model = parse_query(text)
-
-    from app.db import get_price_stats
-
-    stats = await get_price_stats(brand, model)
-
-    if not stats:
-        await message.answer(f"😔 Нет данных по {text}")
-        return
-
-    response = (
-        f"📊 Аналитика цен: {text}\n\n"
-        f"• Объявлений: {stats['count']}\n"
-        f"• Средняя цена: {stats['avg']:,} ₽\n"
-        f"• Медиана: {stats['median']:,} ₽\n"
-        f"• Диапазон: {stats['min']:,} — {stats['max']:,} ₽"
-    )
-
-    await message.answer(response)
-
-
 @dp.message(Command("price"))
 async def cmd_price(message: types.Message, state: FSMContext):
     text = message.text.replace("/price", "").strip()
@@ -324,7 +395,8 @@ async def process_price_query(message: types.Message, state: FSMContext):
     await execute_price(message, message.text)
 
 
-# Админские команды (без изменений)
+# === Админские команды ===
+
 @dp.message(Command("add_channel"))
 async def cmd_add_channel(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -418,6 +490,7 @@ async def on_any_message(message: types.Message):
         await message.answer(
             "🚗 Отправь команду:\n\n"
             "🔍 /search BMW X5 — поиск\n"
+            "📚 /catalog — каталог\n"
             "💰 /price Toyota Camry — аналитика\n"
             "ℹ️ /help — все команды",
             reply_markup=main_keyboard,
