@@ -1,5 +1,6 @@
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from app.config import BOT_TOKEN, ADMIN_IDS
 from app.db import get_db, add_channel, remove_channel, get_channels
 
@@ -19,22 +20,110 @@ TWO_WORD_BRANDS = [
     "mercedes benz",
 ]
 
+# Словарь русских названий марок -> английские
+BRAND_ALIASES = {
+    "кия": "Kia",
+    "киа": "Kia",
+    "хендай": "Hyundai",
+    "хёндай": "Hyundai",
+    "хундай": "Hyundai",
+    "тойота": "Toyota",
+    "бмв": "BMW",
+    "мерседес": "Mercedes-Benz",
+    "мерс": "Mercedes-Benz",
+    "фольксваген": "Volkswagen",
+    "фольцваген": "Volkswagen",
+    "шевроле": "Chevrolet",
+    "хонда": "Honda",
+    "ниссан": "Nissan",
+    "митсубиси": "Mitsubishi",
+    "мицубиси": "Mitsubishi",
+    "мазда": "Mazda",
+    "субару": "Subaru",
+    "лексус": "Lexus",
+    "ауди": "Audi",
+    "шкода": "Skoda",
+    "рено": "Renault",
+    "пежо": "Peugeot",
+    "ситроен": "Citroen",
+    "опель": "Opel",
+    "форд": "Ford",
+    "лада": "Lada",
+    "газ": "ГАЗ",
+    "уаз": "УАЗ",
+    "джили": "Geely",
+    "чери": "Chery",
+    "хавал": "Haval",
+    "чанган": "Changan",
+    "чанъань": "Changan",
+    "лифан": "Lifan",
+    "джетур": "Jetour",
+    "омода": "Omoda",
+    "эксид": "Exeed",
+    "лисян": "Li Auto",
+    "воях": "Voyah",
+    "зикр": "Zeekr",
+}
+
+
+def transliterate(text: str) -> str:
+    """Заменяет русские буквы на латинские для моделей."""
+    mapping = {
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d",
+        "е": "e", "ё": "e", "ж": "zh", "з": "z", "и": "i",
+        "й": "y", "к": "k", "л": "l", "м": "m", "н": "n",
+        "о": "o", "п": "p", "р": "r", "с": "s", "т": "t",
+        "у": "u", "ф": "f", "х": "h", "ц": "ts", "ч": "ch",
+        "ш": "sh", "щ": "sch", "ъ": "", "ы": "y", "ь": "",
+        "э": "e", "ю": "yu", "я": "ya",
+    }
+    result = []
+    for ch in text.lower():
+        result.append(mapping.get(ch, ch))
+    return "".join(result)
+
 
 def parse_query(text: str):
-    """Разбирает строку на марку и модель с учётом двухсловных марок."""
+    """Разбирает строку на марку и модель с учётом русских названий."""
     words = text.split()
+    if not words:
+        return None, None
 
-    if len(words) >= 2 and " ".join(words[:2]).lower() in TWO_WORD_BRANDS:
+    # Переводим первое слово/два слова, если это русская марка
+    first_lower = words[0].lower()
+    if first_lower in BRAND_ALIASES:
+        brand = BRAND_ALIASES[first_lower]
+        model_words = words[1:]
+    elif len(words) >= 2 and " ".join(words[:2]).lower() in BRAND_ALIASES:
+        brand = BRAND_ALIASES[" ".join(words[:2]).lower()]
+        model_words = words[2:]
+    elif len(words) >= 2 and " ".join(words[:2]).lower() in TWO_WORD_BRANDS:
         brand = " ".join(words[:2])
-        model = " ".join(words[2:]) if len(words) > 2 else None
+        model_words = words[2:]
     elif len(words) >= 2:
         brand = words[0]
-        model = " ".join(words[1:])
+        model_words = words[1:]
     else:
         brand = words[0]
-        model = None
+        model_words = []
+
+    # Транслитерируем модель, если она написана русскими буквами
+    model = " ".join(model_words) if model_words else None
+    if model and any("а" <= ch <= "я" or "ё" <= ch <= "ё" for ch in model.lower()):
+        model = transliterate(model)
 
     return brand, model
+
+
+# Создаём постоянную клавиатуру
+main_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="/search"), KeyboardButton(text="/price")],
+        [KeyboardButton(text="/help"), KeyboardButton(text="/stats")],
+    ],
+    resize_keyboard=True,
+    persistent=True,
+)
 
 
 @dp.message(Command("start"))
@@ -45,7 +134,8 @@ async def cmd_start(message: types.Message):
         f"🔍 /search <марка> <модель>\n"
         f"💰 /price <марка> <модель> — аналитика цен\n"
         f"📊 /stats — статистика\n"
-        f"ℹ️ /help — помощь"
+        f"ℹ️ /help — помощь",
+        reply_markup=main_keyboard,
     )
 
 
@@ -55,13 +145,15 @@ async def cmd_help(message: types.Message):
         "🚗 Поиск автомобилей из Telegram-каналов.\n\n"
         "🔍 Поиск:\n"
         "/search BMW X5\n"
-        "/search Land Rover Discovery Sport\n\n"
+        "/search Land Rover Discovery Sport\n"
+        "Можно по-русски: /search кия к5\n\n"
         "🔍 С фильтрами:\n"
-        "/search BMW X5 цена_от=1500000 год_от=2018\n\n"
+        "/search BMW X5 цена_от=1500000 год_от=2018 пробег_до=50000\n\n"
         "💰 Аналитика:\n"
         "/price Toyota Camry\n"
         "/price Land Rover\n\n"
-        "📊 /stats — статистика базы"
+        "📊 /stats — статистика базы",
+        reply_markup=main_keyboard,
     )
 
 
@@ -72,9 +164,8 @@ async def cmd_search(message: types.Message):
     if not text:
         await message.answer(
             "❌ Укажите марку и модель.\n"
-            "Например: /search BMW X5\n\n"
-            "С фильтрами:\n"
-            "/search BMW X5 цена_от=1500000 год_от=2018"
+            "Например: /search BMW X5\n"
+            "Или по-русски: /search кия к5"
         )
         return
 
@@ -104,14 +195,12 @@ async def cmd_search(message: types.Message):
         conditions = []
         params = []
 
-        if model:
+        if brand:
             conditions.append("LOWER(brand) = LOWER(?)")
             params.append(brand)
+        if model:
             conditions.append("LOWER(model) LIKE LOWER(?)")
             params.append(f"%{model}%")
-        else:
-            conditions.append("LOWER(brand) = LOWER(?)")
-            params.append(brand)
 
         if "цена_от" in filters:
             conditions.append("price_rub >= ?")
@@ -125,8 +214,14 @@ async def cmd_search(message: types.Message):
         if "год_до" in filters:
             conditions.append("year <= ?")
             params.append(filters["год_до"])
+        if "пробег_от" in filters:
+            conditions.append("mileage_km >= ?")
+            params.append(filters["пробег_от"])
+        if "пробег_до" in filters:
+            conditions.append("mileage_km <= ?")
+            params.append(filters["пробег_до"])
 
-        where_clause = " AND ".join(conditions)
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
 
         cursor = await db.execute(f"""
             SELECT brand, model, year, price_rub, mileage_km,
@@ -250,7 +345,6 @@ async def cmd_remove_channel(message: types.Message):
 
     value = parts[1]
 
-    # Если передали номер — находим канал по номеру
     if value.isdigit():
         channels = await get_channels()
         idx = int(value) - 1
@@ -305,14 +399,14 @@ async def cmd_stats(message: types.Message):
         await db.close()
 
 
-# Универсальный обработчик — в самом конце, чтобы не перехватывать команды
+# Универсальный обработчик — в самом конце
 @dp.message()
 async def on_any_message(message: types.Message):
-    """Отвечает на любое непонятное сообщение подсказкой."""
     if message.text and not message.text.startswith("/"):
         await message.answer(
             "🚗 Отправь команду:\n\n"
             "🔍 /search BMW X5 — поиск\n"
             "💰 /price Toyota Camry — аналитика\n"
-            "ℹ️ /help — все команды"
+            "ℹ️ /help — все команды",
+            reply_markup=main_keyboard,
         )
