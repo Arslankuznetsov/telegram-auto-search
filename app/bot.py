@@ -56,6 +56,7 @@ def transliterate(text: str) -> str:
 
 
 def parse_query(text: str):
+    """Разбирает строку на марку и модель с учётом русских названий."""
     words = text.split()
     if not words:
         return None, None
@@ -84,23 +85,37 @@ def parse_query(text: str):
     return brand, model
 
 
-def parse_human_price(text: str) -> int | None:
+def parse_mileage(text: str) -> int | None:
+    """Понимает: 50000, 50 тыс, 50к, 50k"""
     text = text.strip().lower().replace(" ", "")
     if not text:
         return None
     if text.isdigit():
         return int(text)
-    if "млн" in text or text.endswith("м") or text.endswith("к"):
-        text = text.replace("млн", "").replace("м", "").replace("к", "")
+    # убираем "тыс", "к", "k"
+    if "тыс" in text or text.endswith("к") or text.endswith("k"):
+        text = text.replace("тыс", "").replace("к", "").replace("k", "")
         try:
-            val = float(text.replace(",", "."))
-            return int(val * 1_000_000)
+            return int(float(text.replace(",", ".")) * 1000)
         except ValueError:
             return None
-    try:
-        return int(float(text.replace(",", ".")))
-    except ValueError:
+    return None
+
+
+def parse_price(text: str) -> int | None:
+    """Понимает: 1500000, 1.5 млн, 1,5 млн, 1.5м"""
+    text = text.strip().lower().replace(" ", "")
+    if not text:
         return None
+    if text.isdigit():
+        return int(text)
+    if "млн" in text or text.endswith("м"):
+        text = text.replace("млн", "").replace("м", "")
+        try:
+            return int(float(text.replace(",", ".")) * 1_000_000)
+        except ValueError:
+            return None
+    return None
 
 
 main_keyboard = ReplyKeyboardMarkup(
@@ -142,8 +157,8 @@ async def cmd_help(message: types.Message):
         "🔍 Поиск:\n"
         "1. Нажми /search\n"
         "2. Введи марку и модель (можно по-русски: кия к5)\n"
-        "3. Введи максимальный пробег (или 'нет')\n"
-        "4. Введи максимальную цену (или 'нет')\n\n"
+        "3. Введи максимальный пробег (например, 50000 или 'нет')\n"
+        "4. Введи максимальную цену (например, 1500000 или 'до 1,5 млн')\n\n"
         "📚 Каталог:\n"
         "Нажми /catalog и выбери марку, затем модель.\n\n"
         "💰 Аналитика:\n"
@@ -265,9 +280,13 @@ async def execute_price(message: types.Message, text: str):
 async def cmd_catalog(message: types.Message):
     db = await get_db()
     try:
-        cursor = await db.execute(
-            "SELECT DISTINCT brand FROM listings WHERE brand IS NOT NULL ORDER BY brand"
-        )
+        cursor = await db.execute("""
+            SELECT brand, COUNT(*) as cnt
+            FROM listings
+            WHERE brand IS NOT NULL
+            GROUP BY LOWER(brand)
+            ORDER BY LOWER(brand)
+        """)
         rows = await cursor.fetchall()
     finally:
         await db.close()
@@ -276,11 +295,24 @@ async def cmd_catalog(message: types.Message):
         await message.answer("📚 Каталог пока пуст.")
         return
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    brands_with_counts = {}
     for row in rows:
         brand = row["brand"]
+        cnt = row["cnt"]
+        key = brand.lower()
+        if key not in brands_with_counts:
+            brands_with_counts[key] = {"brand": brand, "cnt": cnt}
+        else:
+            brands_with_counts[key]["cnt"] += cnt
+
+    sorted_brands = sorted(brands_with_counts.values(), key=lambda x: x["brand"].lower())
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    for item in sorted_brands:
+        brand = item["brand"]
+        cnt = item["cnt"]
         keyboard.inline_keyboard.append(
-            [InlineKeyboardButton(text=brand, callback_data=f"brand:{brand}")]
+            [InlineKeyboardButton(text=f"{brand} ({cnt})", callback_data=f"brand:{brand}")]
         )
 
     await message.answer("📚 Выберите марку:", reply_markup=keyboard)
@@ -292,10 +324,13 @@ async def process_brand_callback(callback: types.CallbackQuery):
 
     db = await get_db()
     try:
-        cursor = await db.execute(
-            "SELECT DISTINCT model FROM listings WHERE brand = ? AND model IS NOT NULL ORDER BY model",
-            (brand,)
-        )
+        cursor = await db.execute("""
+            SELECT model, COUNT(*) as cnt
+            FROM listings
+            WHERE brand = ? AND model IS NOT NULL
+            GROUP BY LOWER(model)
+            ORDER BY LOWER(model)
+        """, (brand,))
         rows = await cursor.fetchall()
     finally:
         await db.close()
@@ -306,11 +341,24 @@ async def process_brand_callback(callback: types.CallbackQuery):
         await callback.message.answer(f"Нет моделей для {brand}")
         return
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    models_with_counts = {}
     for row in rows:
         model = row["model"]
+        cnt = row["cnt"]
+        key = model.lower()
+        if key not in models_with_counts:
+            models_with_counts[key] = {"model": model, "cnt": cnt}
+        else:
+            models_with_counts[key]["cnt"] += cnt
+
+    sorted_models = sorted(models_with_counts.values(), key=lambda x: x["model"].lower())
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+    for item in sorted_models:
+        model = item["model"]
+        cnt = item["cnt"]
         keyboard.inline_keyboard.append(
-            [InlineKeyboardButton(text=model, callback_data=f"model:{brand}:{model}")]
+            [InlineKeyboardButton(text=f"{model} ({cnt})", callback_data=f"model:{brand}:{model}")]
         )
 
     await callback.message.answer(f"🚗 {brand} — выберите модель:", reply_markup=keyboard)
@@ -327,7 +375,6 @@ async def process_model_callback(callback: types.CallbackQuery):
     model = parts[2]
     await callback.answer()
 
-    # Выполняем поиск
     await execute_search(callback.message, f"{brand} {model}")
 
 
@@ -357,7 +404,7 @@ async def process_mileage(message: types.Message, state: FSMContext):
     if text in ("нет", "не важно", "-", "пропустить"):
         mileage_max = None
     else:
-        mileage_max = parse_human_price(text) if any(ch.isdigit() for ch in text) else None
+        mileage_max = parse_mileage(text)
 
     await state.update_data(mileage_max=mileage_max)
     await message.answer("Максимальная цена? (например, 1500000 или 'до 1,5 млн')")
@@ -370,7 +417,7 @@ async def process_price(message: types.Message, state: FSMContext):
     if text in ("нет", "не важно", "-", "пропустить"):
         price_max = None
     else:
-        price_max = parse_human_price(text)
+        price_max = parse_price(text)
 
     data = await state.get_data()
     query = data.get("query", "")
