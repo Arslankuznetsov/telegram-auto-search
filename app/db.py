@@ -138,27 +138,38 @@ async def remove_channel(username: str):
     await db.close()
 
 
-async def get_price_stats(brand: str, model: str = None):
-    """Возвращает статистику цен по марке и модели."""
+async def get_price_stats(brand: str, model: str = None, year_from: int = None, year_to: int = None):
+    """Возвращает статистику цен по марке и модели с возможной фильтрацией по году."""
     db = await get_db()
 
+    conditions = ["price_rub IS NOT NULL"]
+    params = []
+
     if model:
-        cursor = await db.execute("""
-            SELECT price_rub
-            FROM listings
-            WHERE LOWER(brand) = LOWER(?)
-              AND LOWER(model) LIKE LOWER(?)
-              AND price_rub IS NOT NULL
-            ORDER BY price_rub
-        """, (brand, f"%{model}%"))
+        conditions.append("LOWER(brand) = LOWER(?)")
+        params.append(brand)
+        conditions.append("LOWER(model) LIKE LOWER(?)")
+        params.append(f"%{model}%")
     else:
-        cursor = await db.execute("""
-            SELECT price_rub
-            FROM listings
-            WHERE LOWER(brand) = LOWER(?)
-              AND price_rub IS NOT NULL
-            ORDER BY price_rub
-        """, (brand,))
+        conditions.append("LOWER(brand) = LOWER(?)")
+        params.append(brand)
+
+    if year_from is not None:
+        conditions.append("year >= ?")
+        params.append(year_from)
+
+    if year_to is not None:
+        conditions.append("year <= ?")
+        params.append(year_to)
+
+    where_clause = " AND ".join(conditions)
+
+    cursor = await db.execute(f"""
+        SELECT price_rub
+        FROM listings
+        WHERE {where_clause}
+        ORDER BY price_rub
+    """, params)
 
     rows = await cursor.fetchall()
     await db.close()
